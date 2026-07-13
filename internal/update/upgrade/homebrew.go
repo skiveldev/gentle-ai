@@ -3,6 +3,7 @@ package upgrade
 import (
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/update"
@@ -45,6 +46,10 @@ func homebrewPackageInstalledWith(run commandRunner, resolvePath pathResolver, t
 }
 
 func pathWithinPrefix(path, prefix string) bool {
+	return pathWithinPrefixForOS(path, prefix, runtime.GOOS)
+}
+
+func pathWithinPrefixForOS(path, prefix, osName string) bool {
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err == nil {
 		path = resolvedPath
@@ -56,6 +61,10 @@ func pathWithinPrefix(path, prefix string) bool {
 
 	path = filepath.Clean(path)
 	prefix = filepath.Clean(prefix)
+	if osName == "windows" {
+		path = strings.ToLower(path)
+		prefix = strings.ToLower(prefix)
+	}
 	if path == prefix {
 		return true
 	}

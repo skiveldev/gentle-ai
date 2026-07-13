@@ -600,13 +600,13 @@ func executeOne(ctx context.Context, r update.UpdateResult, profile system.Platf
 }
 
 // effectiveMethod resolves the actual upgrade strategy for a tool on a given platform.
-// Priority order matches the documented install hierarchy: plugin → brew-owned package → Windows installer → go-install → declared method.
+// Priority order matches the documented install hierarchy: plugin → brew-owned package → Go-owned active binary → Windows installer → declared method.
 //
 //  1. OpenCode plugins are always handled by their own method — never overridden.
 //  2. Homebrew is used only when Homebrew confirms it owns this specific tool.
-//  3. gentle-ai on Windows uses the installer so the running binary can exit before replacement.
-//  4. When Go is available on PATH and the tool has a GoImportPath, go-install is
-//     preferred over a direct binary download.
+//  3. gentle-ai uses go-install only when its active binary is in Go's configured
+//     install target. Other Go-capable tools retain their existing go-install fallback.
+//  4. On Windows, gentle-ai falls back to the PowerShell installer.
 //  5. Otherwise the tool's declared InstallMethod is used as-is.
 func effectiveMethod(tool update.ToolInfo, profile system.PlatformProfile) update.InstallMethod {
 	if tool.InstallMethod == update.InstallOpenCodePlugin {
@@ -615,12 +615,18 @@ func effectiveMethod(tool update.ToolInfo, profile system.PlatformProfile) updat
 	if profile.PackageManager == "brew" && homebrewPackageInstalled(tool.Name) {
 		return update.InstallBrew
 	}
+	if profile.GoAvailable && tool.GoImportPath != "" {
+		if tool.Name == "gentle-ai" && !goInstallOwnsActiveExecutableForOS(profile.OS) {
+			if profile.OS == "windows" {
+				return update.InstallInstaller
+			}
+			return tool.InstallMethod
+		}
+		return update.InstallGoInstall
+	}
 	// Use installer method for gentle-ai on Windows (launches PowerShell installer).
 	if profile.OS == "windows" && tool.Name == "gentle-ai" {
 		return update.InstallInstaller
-	}
-	if profile.GoAvailable && tool.GoImportPath != "" {
-		return update.InstallGoInstall
 	}
 	return tool.InstallMethod
 }

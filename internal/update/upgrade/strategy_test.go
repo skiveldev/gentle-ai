@@ -269,49 +269,174 @@ func TestRunStrategy_GoInstallFailure(t *testing.T) {
 	}
 }
 
-// --- TestEffectiveMethod_GentleAIOnWindowsUsesInstaller ---
+// --- TestEffectiveMethod_GentleAIOnWindowsPreservesInstallationOwnership ---
 
-// TestEffectiveMethod_GentleAIOnWindowsUsesInstaller verifies that gentle-ai
-// on Windows uses InstallInstaller (auto-upgrade via PowerShell)
-func TestEffectiveMethod_GentleAIOnWindowsUsesInstaller(t *testing.T) {
+func TestEffectiveMethod_GentleAIOnWindowsPreservesInstallationOwnership(t *testing.T) {
+	origCurrentExecutable := currentExecutable
+	origGoInstallBinDirs := goInstallBinDirs
+	t.Cleanup(func() {
+		currentExecutable = origCurrentExecutable
+		goInstallBinDirs = origGoInstallBinDirs
+	})
+
 	tests := []struct {
-		name string
-		tool update.ToolInfo
-		want update.InstallMethod
+		name            string
+		activePath      string
+		goInstallBinDir string
+		want            update.InstallMethod
 	}{
 		{
-			name: "binary becomes installer",
-			tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallBinary},
-			want: update.InstallInstaller,
+			name:            "Go-owned binary uses Go install",
+			activePath:      "C:/Users/Alice/Go/bin/gentle-ai.exe",
+			goInstallBinDir: "C:/Users/Alice/Go/bin",
+			want:            update.InstallGoInstall,
 		},
 		{
-			name: "script becomes installer",
-			tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallScript},
-			want: update.InstallInstaller,
+			name:            "mixed-case Go-owned binary uses Go install",
+			activePath:      "C:/Users/Alice/Go/bin/gentle-ai.exe",
+			goInstallBinDir: "c:/users/alice/go/BIN",
+			want:            update.InstallGoInstall,
 		},
 		{
-			name: "go-install becomes installer",
-			tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallGoInstall},
-			want: update.InstallInstaller,
+			name:            "nested descendant is not Go-owned",
+			activePath:      "C:/Users/Alice/Go/bin/nested/gentle-ai.exe",
+			goInstallBinDir: "C:/Users/Alice/Go/bin",
+			want:            update.InstallInstaller,
 		},
 		{
-			name: "installer stays installer",
-			tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallInstaller},
-			want: update.InstallInstaller,
+			name:            "wrong executable basename is not Go-owned",
+			activePath:      "C:/Users/Alice/Go/bin/gentle-ai-old.exe",
+			goInstallBinDir: "C:/Users/Alice/Go/bin",
+			want:            update.InstallInstaller,
 		},
 		{
-			name: "go available still uses installer",
-			tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallBinary, GoImportPath: "github.com/Gentleman-Programming/gentle-ai/cmd/gentle-ai"},
-			want: update.InstallInstaller,
+			name:            "sibling Go path is not owned",
+			activePath:      "C:/Users/Alice/Go/bin-tools/gentle-ai.exe",
+			goInstallBinDir: "C:/Users/Alice/Go/bin",
+			want:            update.InstallInstaller,
+		},
+		{
+			name:            "installer-managed binary remains installer-owned when Go is available",
+			activePath:      "C:/Program Files/Gentle AI/gentle-ai.exe",
+			goInstallBinDir: "C:/Users/Alice/Go/bin",
+			want:            update.InstallInstaller,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			currentExecutable = func() (string, error) { return tc.activePath, nil }
+			goInstallBinDirs = func() []string { return []string{tc.goInstallBinDir} }
 			profile := system.PlatformProfile{OS: "windows", PackageManager: "winget", GoAvailable: true}
-			method := effectiveMethod(tc.tool, profile)
+			tool := update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallBinary, GoImportPath: "github.com/gentleman-programming/gentle-ai/cmd/gentle-ai"}
+			method := effectiveMethod(tool, profile)
 			if method != tc.want {
-				t.Errorf("effectiveMethod(%q) = %q, want %q", tc.tool.Name, method, tc.want)
+				t.Errorf("effectiveMethod(gentle-ai) = %q, want %q", method, tc.want)
+			}
+		})
+	}
+}
+
+func TestGoInstallOwnsActiveExecutableForOS(t *testing.T) {
+	origCurrentExecutable := currentExecutable
+	origGoInstallBinDirs := goInstallBinDirs
+	t.Cleanup(func() {
+		currentExecutable = origCurrentExecutable
+		goInstallBinDirs = origGoInstallBinDirs
+	})
+
+	tests := []struct {
+		name       string
+		activePath string
+		want       bool
+	}{
+		{name: "canonical direct target", activePath: "C:/Users/Alice/Go/bin/gentle-ai.exe", want: true},
+		{name: "nested descendant", activePath: "C:/Users/Alice/Go/bin/nested/gentle-ai.exe", want: false},
+		{name: "wrong basename", activePath: "C:/Users/Alice/Go/bin/gentle-ai-old.exe", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			currentExecutable = func() (string, error) { return tc.activePath, nil }
+			goInstallBinDirs = func() []string { return []string{"c:/users/alice/go/BIN"} }
+			if got := goInstallOwnsActiveExecutableForOS("windows"); got != tc.want {
+				t.Fatalf("goInstallOwnsActiveExecutableForOS(windows) = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunStrategy_GoOwnedGentleAIUsesGoInstallTarget(t *testing.T) {
+	origCurrentExecutable := currentExecutable
+	origGoInstallBinDirs := goInstallBinDirs
+	origExecCommand := execCommand
+	t.Cleanup(func() {
+		currentExecutable = origCurrentExecutable
+		goInstallBinDirs = origGoInstallBinDirs
+		execCommand = origExecCommand
+	})
+
+	currentExecutable = func() (string, error) { return "C:/Users/Alice/Go/bin/gentle-ai.exe", nil }
+	goInstallBinDirs = func() []string { return []string{"C:/Users/Alice/Go/bin"} }
+
+	var gotName string
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return mockCmd("true")
+	}
+
+	_, err := runStrategy(context.Background(), update.UpdateResult{
+		Tool: update.ToolInfo{
+			Name:          "gentle-ai",
+			InstallMethod: update.InstallBinary,
+			GoImportPath:  "github.com/gentleman-programming/gentle-ai/cmd/gentle-ai",
+		},
+		LatestVersion: "2.1.2",
+	}, system.PlatformProfile{OS: "windows", GoAvailable: true})
+	if err != nil {
+		t.Fatalf("runStrategy: unexpected error: %v", err)
+	}
+
+	if gotName != "go" {
+		t.Fatalf("command = %q, want go", gotName)
+	}
+	wantArgs := []string{"install", "github.com/gentleman-programming/gentle-ai/cmd/gentle-ai@v2.1.2"}
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("go command args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestGoInstallBinDirsFromEnv(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   []string
+	}{
+		{
+			name:   "uses GOBIN when configured",
+			output: filepath.Join("custom", "bin") + "\n" + filepath.Join("go", "workspace") + "\n",
+			want:   []string{filepath.Join("custom", "bin")},
+		},
+		{
+			name: "uses every GOPATH bin when GOBIN is empty",
+			output: "\n" + strings.Join([]string{
+				filepath.Join("go", "workspace-one"),
+				filepath.Join("go", "workspace-two"),
+			}, string(filepath.ListSeparator)) + "\n",
+			want: []string{
+				filepath.Join("go", "workspace-one", "bin"),
+				filepath.Join("go", "workspace-two", "bin"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := goInstallBinDirsFromEnv(tc.output)
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("goInstallBinDirsFromEnv(%q) = %v, want %v", tc.output, got, tc.want)
 			}
 		})
 	}
@@ -498,6 +623,46 @@ func TestHomebrewPackageInstalledWithRequiresActiveBrewPath(t *testing.T) {
 	}
 	if homebrewPackageInstalledWith(func(string, ...string) *exec.Cmd { return mockCmd("true") }, func(string) (string, error) { return "", errors.New("not found") }, "gentle-ai") {
 		t.Fatal("expected active path lookup failure to avoid Homebrew")
+	}
+}
+
+func TestPathWithinPrefixForOS(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		prefix string
+		osName string
+		want   bool
+	}{
+		{
+			name:   "Windows paths match regardless of casing",
+			path:   "C:/Users/Alice/Go/bin/gentle-ai.exe",
+			prefix: "c:/users/alice/go/BIN",
+			osName: "windows",
+			want:   true,
+		},
+		{
+			name:   "Windows sibling prefix does not match",
+			path:   "C:/Users/Alice/Go/bin-tools/gentle-ai.exe",
+			prefix: "c:/users/alice/go/BIN",
+			osName: "windows",
+			want:   false,
+		},
+		{
+			name:   "non-Windows paths remain case-sensitive",
+			path:   "/Users/Alice/go/bin/gentle-ai",
+			prefix: "/users/alice/go/bin",
+			osName: "darwin",
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pathWithinPrefixForOS(tc.path, tc.prefix, tc.osName); got != tc.want {
+				t.Fatalf("pathWithinPrefixForOS(%q, %q, %q) = %t, want %t", tc.path, tc.prefix, tc.osName, got, tc.want)
+			}
+		})
 	}
 }
 

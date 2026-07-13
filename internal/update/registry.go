@@ -21,9 +21,11 @@ var Tools = []ToolInfo{
 		Repo:          "gentle-ai",
 		DetectCmd:     nil, // version comes from build-time ldflags (app.Version)
 		VersionPrefix: "v",
-		// gentle-ai: Homebrew when the package is brew-owned, binary release download otherwise.
-		// Windows self-upgrade uses the PowerShell installer so the running binary can exit before replacement.
+		// gentle-ai: Homebrew when the package is brew-owned, Go install when the active
+		// executable is Go-owned, binary release download otherwise.
+		// Windows falls back to the PowerShell installer for installer-owned executables.
 		InstallMethod: InstallBinary,
+		GoImportPath:  "github.com/gentleman-programming/gentle-ai/cmd/gentle-ai",
 	},
 	{
 		Name:              "engram",
